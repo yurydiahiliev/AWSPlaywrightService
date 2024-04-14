@@ -14,3 +14,5 @@ router.post('/runPlaywright', async (req: Request, res: Response) => {
 router.delete('/deleteSpotFleet/:spotFleetId', async (req: Request<{ spotFleetId: string }>, res: Response) => {
     await handleDeleteSpotFleet(req, res);
 });
+
+export default router;
