@@ -1,14 +1,17 @@
 {
   "name": "awsplaywrightservice",
   "version": "1.0.0",
-  "description": "",
+  "description": "Express API for managing AWS Spot Fleets with Docker Playwright integration",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "ts-node src/common/index.ts",
+    "build": "tsc",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix"
   },
   "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "author": "Yurii Diahiliev",
+  "license": "Apache-2.0",
   "devDependencies": {
     "@types/aws-sdk": "^2.7.0",
     "@types/express": "^4.17.21",
