@@ -1,8 +1,4 @@
-<<<<<<< HEAD
-import express, { Request, Response } from 'express';
-=======
 import express, { NextFunction, Request, Response } from 'express';
->>>>>>> 7a247da (fix for error handler)
 import routes from './routes';
 
 const app = express();
@@ -20,17 +16,10 @@ app.use((req: Request, res: Response, next) => {
 
 app.use('/', routes);
 
-<<<<<<< HEAD
-app.use((err: Error, req: Request, res: Response) => {
-  console.error('Error:', err);
-  res.status(500).json({ error: 'Internal Server Error' });
-});
-=======
 app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
     console.error('Error:', err);
     res.status(500).json({ error: 'Internal Server Error' });
   });
->>>>>>> 7a247da (fix for error handler)
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
