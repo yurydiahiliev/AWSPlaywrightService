@@ -1,146 +1,236 @@
-import AWS from 'aws-sdk';
+import {
+    EC2Client, CreateSecurityGroupCommand, CreateSecurityGroupCommandInput, AuthorizeSecurityGroupIngressCommand,
+    RequestSpotFleetCommand, RequestSpotFleetCommandInput, RequestSpotFleetCommandOutput, CancelSpotFleetRequestsCommand,
+    CancelSpotFleetRequestsCommandInput,
+    DeleteSecurityGroupCommand, DeleteSecurityGroupCommandInput
+} from "@aws-sdk/client-ec2";
+import {
+    IAMClient, CreateRoleCommand as IAMCreateRoleCommand, CreateRoleCommandInput as IAMCreateRoleCommandInput,
+    PutRolePolicyCommand as IAMPutRolePolicyCommand, PutRolePolicyCommandInput as IAMPutRolePolicyCommandInput,
+    DetachRolePolicyCommand as IAMDetchRolePolicyCommand, DetachRolePolicyCommandInput as IAMDetchRolePolicyCommandInput,
+    DeleteRoleCommand as IAMDeleteRoleCommand, DeleteRoleCommandInput as IAMDeleteRoleCommandInput
+} from "@aws-sdk/client-iam";
 import { v4 as uuidv4 } from 'uuid';
 
-AWS.config.update({ region: 'us-east-1' });
+const ec2Client = new EC2Client({ region: "us-east-1" });
+const iamClient = new IAMClient({ region: "us-east-1" });
 
-const ec2 = new AWS.EC2();
-const iam = new AWS.IAM();
-
-const keyPairName = 'test.pem';
+const keyPairName = 'test';
 const vpcId = 'vpc-05322bf757c9b2f06';
 const instanceType = 't2.micro';
 const availabilityZone = 'us-east-1a';
-const amiId = 'ami-b70554c8';
+const amiId = 'ami-0e001c9271cf7f3b9';
 
-async function createIamRole() {
-    const roleName = `spot-fleet-role-${uuidv4()}`;
-    const assumeRolePolicyDocument = JSON.stringify({
-        Version: '2012-10-17',
-        Statement: [
-            {
-                Effect: 'Allow',
-                Principal: { Service: 'spotfleet.amazonaws.com' },
-                Action: 'sts:AssumeRole'
-            }
-        ]
-    });
+async function createIAMRole(): Promise<{ roleArn: string; roleName: string }> {
+    const roleName = `pw-spot-fleet-role-${uuidv4()}`;
+    try {
+        const createRoleParams: IAMCreateRoleCommandInput = {
+            RoleName: roleName,
+            AssumeRolePolicyDocument: JSON.stringify({
+                Version: "2012-10-17",
+                Statement: [
+                    {
+                        Effect: "Allow",
+                        Principal: {
+                            Service: "ec2.amazonaws.com",
+                        },
+                        Action: "sts:AssumeRole",
+                    },
+                ],
+            }),
+        };
 
-    const roleParams: AWS.IAM.CreateRoleRequest = {
-        RoleName: roleName,
-        AssumeRolePolicyDocument: assumeRolePolicyDocument,
-        Description: 'Role for Spot Fleet'
-    };
+        const createRoleCommand = new IAMCreateRoleCommand(createRoleParams);
+        const createRoleResponse = await iamClient.send(createRoleCommand);
+        const roleArn = createRoleResponse.Role?.Arn;
 
-    const roleData = await iam.createRole(roleParams).promise();
+        if (!roleArn) {
+            throw new Error("Failed to create role or retrieve role ARN");
+        }
 
-    const policyParams: AWS.IAM.AttachRolePolicyRequest = {
-        RoleName: roleName,
-        PolicyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetRole'
-    };
+        console.log("Role created successfully:", roleArn);
 
-    await iam.attachRolePolicy(policyParams).promise();
+        const policyDocument = {
+            Version: "2012-10-17",
+            Statement: [
+                {
+                    Effect: "Allow",
+                    Action: [
+                        "ec2:Describe*",
+                        "ec2:RequestSpotInstances",
+                        "ec2:TerminateInstances",
+                        "ec2:CreateTags",
+                        "ec2:DeleteTags",
+                        "ec2:DescribeSpotFleetInstances",
+                        "ec2:CancelSpotFleetRequests",
+                        "ec2:ModifySpotFleetRequest",
+                        "iam:PassRole"
+                    ],
+                    Resource: "*",
+                },
+            ],
+        };
 
-    return { roleArn: roleData.Role.Arn, roleName };
+        const putRolePolicyParams: IAMPutRolePolicyCommandInput = {
+            RoleName: roleName,
+            PolicyName: "EC2SpotFleetFullAccessPolicy",
+            PolicyDocument: JSON.stringify(policyDocument),
+        };
+
+        const putRolePolicyCommand = new IAMPutRolePolicyCommand(putRolePolicyParams);
+        await iamClient.send(putRolePolicyCommand);
+        console.log("Policy attached successfully");
+
+        return { roleArn, roleName };
+    } catch (error) {
+        console.error("Error creating role or attaching policy:", error);
+        throw error;
+    }
 }
 
-async function createSecurityGroup() {
-    const groupName = `spot-fleet-sg-${uuidv4()}`;
+async function createSecurityGroup(): Promise<{ securityGroupId: string; groupName: string }> {
+    const groupName = `pw-spot-fleet-sg-${uuidv4()}`;
     const groupDescription = 'Security group for Spot Fleet';
 
-    const sgParams: AWS.EC2.CreateSecurityGroupRequest = {
-        Description: groupDescription,
-        GroupName: groupName,
-        VpcId: vpcId
-    };
+    try {
+        const createSecurityGroupParams: CreateSecurityGroupCommandInput = {
+            Description: groupDescription,
+            GroupName: groupName,
+            VpcId: vpcId
+        };
 
-    const sgData = await ec2.createSecurityGroup(sgParams).promise();
+        const createSecurityGroupCommand = new CreateSecurityGroupCommand(createSecurityGroupParams);
+        const sgData = await ec2Client.send(createSecurityGroupCommand);
 
-    const ipPermissions: AWS.EC2.IpPermission[] = [
-        {
-            IpProtocol: '-1', // -1 means all protocols
-            FromPort: -1,     // -1 means all ports
-            ToPort: -1,       // -1 means all ports
-            IpRanges: [{ CidrIp: '0.0.0.0/0' }] // Allows all IPs
-        }
-    ];
+        const ipPermissions = [
+            {
+                IpProtocol: '-1', // -1 means all protocols
+                FromPort: -1,     // -1 means all ports
+                ToPort: -1,       // -1 means all ports
+                IpRanges: [{ CidrIp: '0.0.0.0/0' }] // Allows all IPs
+            }
+        ];
 
-    const authorizeParams: AWS.EC2.AuthorizeSecurityGroupIngressRequest = {
-        GroupId: sgData.GroupId,
-        IpPermissions: ipPermissions
-    };
+        const authorizeSecurityGroupParams = {
+            GroupId: sgData.GroupId!,
+            IpPermissions: ipPermissions
+        };
 
-    await ec2.authorizeSecurityGroupIngress(authorizeParams).promise();
+        const authorizeSecurityGroupCommand = new AuthorizeSecurityGroupIngressCommand(authorizeSecurityGroupParams);
+        await ec2Client.send(authorizeSecurityGroupCommand);
 
-    return { securityGroupId: sgData.GroupId!, groupName };
+        return { securityGroupId: sgData.GroupId!, groupName };
+    } catch (error) {
+        console.error("Error creating security group:", error);
+        throw error;
+    }
 }
 
-async function createSpotFleet(roleArn: string, securityGroupId: string) {
+async function createSpotFleet(roleArn: string, securityGroupId: string): Promise<string> {
     const userDataScript = `#!/bin/bash
-    yum update -y
-    yum install -y docker
-    service docker start
-    usermod -a -G docker ec2-user
-    docker pull mcr.microsoft.com/playwright`;
+yum update -y
+yum install -y docker
+service docker start
+usermod -a -G docker ec2-user
+docker pull mcr.microsoft.com/playwright:v1.44.1-jammy`;
 
-    const params: AWS.EC2.RequestSpotFleetRequest = {
-        SpotFleetRequestConfig: {
-            IamFleetRole: roleArn,
-            AllocationStrategy: 'lowestPrice',
-            TargetCapacity: 1,
-            LaunchSpecifications: [
-                {
-                    ImageId: amiId,
-                    InstanceType: instanceType,
-                    KeyName: keyPairName,
-                    SecurityGroups: [
-                        {
-                            GroupId: securityGroupId!
-                        }
-                    ],
-                    SubnetId: 'subnet-12345678', // Update with your subnet ID
-                    Placement: {
-                        AvailabilityZone: availabilityZone
+    try {
+        const spotFleetParams: RequestSpotFleetCommandInput = {
+            SpotFleetRequestConfig: {
+                IamFleetRole: roleArn,
+                AllocationStrategy: "lowestPrice",
+                SpotPrice: "0.3",
+                TargetCapacity: 1,
+                LaunchSpecifications: [
+                    {
+                        ImageId: amiId,
+                        InstanceType: instanceType,
+                        KeyName: keyPairName,
+                        SecurityGroups: [
+                            {
+                                GroupId: securityGroupId,
+                            },
+                        ],
+                        Placement: {
+                            AvailabilityZone: availabilityZone,
+                        },
+                        IamInstanceProfile: {
+                            Arn: roleArn,
+                        },
+                        UserData: Buffer.from(userDataScript).toString("base64"),
                     },
-                    UserData: Buffer.from(userDataScript).toString('base64')
-                }
-            ]
-        }
-    };
+                ],
+            },
+        };
 
-    const data = await ec2.requestSpotFleet(params).promise();
-    return data.SpotFleetRequestId!;
+        const requestSpotFleetCommand = new RequestSpotFleetCommand(spotFleetParams);
+        const response: RequestSpotFleetCommandOutput = await ec2Client.send(requestSpotFleetCommand);
+        console.log("Spot Fleet Request created successfully:", response);
+        return response.SpotFleetRequestId || "No SpotFleetRequestId returned";
+    } catch (error) {
+        console.error("Error creating Spot Fleet Request:", error);
+        throw error;
+    }
 }
 
-async function deleteSecurityGroup(groupId: string) {
-    const params: AWS.EC2.DeleteSecurityGroupRequest = {
-        GroupId: groupId
-    };
-    await ec2.deleteSecurityGroup(params).promise();
+async function deleteSecurityGroup(groupId: string): Promise<void> {
+    try {
+        const deleteSecurityGroupParams: DeleteSecurityGroupCommandInput = {
+            GroupId: groupId
+        };
+
+        const deleteSecurityGroupCommand = new DeleteSecurityGroupCommand(deleteSecurityGroupParams);
+        await ec2Client.send(deleteSecurityGroupCommand);
+        console.log(`Security group ${groupId} deleted successfully.`);
+    } catch (error) {
+        console.error("Error deleting security group:", error);
+        throw error;
+    }
 }
 
-async function deleteIamRole(roleName: string) {
-    const detachParams: AWS.IAM.DetachRolePolicyRequest = {
-        RoleName: roleName,
-        PolicyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetRole'
-    };
-    await iam.detachRolePolicy(detachParams).promise();
+async function deleteIamRole(roleName: string): Promise<void> {
+    try {
+        const detachRolePolicyParams: IAMDetchRolePolicyCommandInput = {
+            RoleName: roleName,
+            PolicyArn: 'arn:aws:iam::aws:policy/service-role/AmazonEC2SpotFleetTaggingRole'
+        };
 
-    const deleteParams: AWS.IAM.DeleteRoleRequest = {
-        RoleName: roleName
-    };
-    await iam.deleteRole(deleteParams).promise();
+        const detachRolePolicyCommand = new IAMDetchRolePolicyCommand(detachRolePolicyParams);
+        await iamClient.send(detachRolePolicyCommand);
+
+        const deleteRoleParams: IAMDeleteRoleCommandInput = {
+            RoleName: roleName
+        };
+
+        const deleteRoleCommand = new IAMDeleteRoleCommand(deleteRoleParams);
+        await iamClient.send(deleteRoleCommand);
+
+        console.log(`IAM role ${roleName} deleted successfully.`);
+    } catch (error) {
+        console.error("Error deleting IAM role:", error);
+        throw error;
+    }
 }
 
 async function cancelSpotFleetRequest(spotFleetRequestId: string): Promise<void> {
-    const params: AWS.EC2.CancelSpotFleetRequestsRequest = {
-        SpotFleetRequestIds: [spotFleetRequestId],
-        TerminateInstances: true
-    };
-    await ec2.cancelSpotFleetRequests(params).promise();
+    try {
+        const cancelSpotFleetParams: CancelSpotFleetRequestsCommandInput = {
+            SpotFleetRequestIds: [spotFleetRequestId],
+            TerminateInstances: true
+        };
+
+        const cancelSpotFleetCommand = new CancelSpotFleetRequestsCommand(cancelSpotFleetParams);
+        await ec2Client.send(cancelSpotFleetCommand);
+
+        console.log(`Spot Fleet request ${spotFleetRequestId} cancelled successfully.`);
+    } catch (error) {
+        console.error("Error cancelling Spot Fleet request:", error);
+        throw error;
+    }
 }
 
 export {
-    createIamRole,
+    createIAMRole,
     createSecurityGroup,
     createSpotFleet,
     deleteSecurityGroup,

@@ -24,6 +24,8 @@
     "typescript": "^5.4.5"
   },
   "dependencies": {
+    "@aws-sdk/client-ec2": "^3.600.0",
+    "@aws-sdk/client-iam": "^3.600.0",
     "mongodb": "^6.7.0",
     "uuid": "^10.0.0"
   }

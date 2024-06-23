@@ -1,12 +1,14 @@
 import { Request, Response } from 'express';
-import { createIamRole, createSecurityGroup, createSpotFleet, deleteSecurityGroup, deleteIamRole, cancelSpotFleetRequest } from './aws';
+import { createIAMRole, createSecurityGroup, createSpotFleet, deleteSecurityGroup, deleteIamRole, cancelSpotFleetRequest } from './aws';
 import { storeFleetInfo, deleteFleetInfo, FleetInfo, getFleetInfoFromMongo } from './mongo';
 
 export async function handleCreateSpotFleetRequest(request: Request, response: Response) {
     try {
-        const { roleArn, roleName } = await createIamRole();
-        const { securityGroupId, groupName } = await createSecurityGroup();
+        
+        const { roleArn, roleName } = await createIAMRole();
+        const { securityGroupId } = await createSecurityGroup();
         const spotFleetRequestId = await createSpotFleet(roleArn, securityGroupId);
+
 
         const fleetInfo: FleetInfo = {
             primaryUniqueId: new Date().toISOString(),
@@ -14,9 +16,9 @@ export async function handleCreateSpotFleetRequest(request: Request, response: R
             securityGroupId,
             spotFleetRequestId
         };
-
         const insertedId = await storeFleetInfo(fleetInfo);
 
+        // Respond with success message and data
         response.status(201).json({
             message: 'Spot Fleet Request Created',
             data: { ...fleetInfo, insertedId }
@@ -31,19 +33,25 @@ export async function handleDeleteSpotFleet(request: Request<{ spotFleetId: stri
     const { spotFleetId } = request.params;
 
     try {
+        // Retrieve fleet information from MongoDB
         const fleetInfo = await getFleetInfoFromMongo(spotFleetId);
-
         if (!fleetInfo) {
             throw new Error('Fleet info not found in database');
         }
 
-        const { roleName, securityGroupId } = fleetInfo;
+        // Cancel Spot Fleet request
+        await cancelSpotFleetRequest(spotFleetId);
 
-        await cancelSpotFleetRequest(spotFleetId)
-        await deleteSecurityGroup(securityGroupId);
-        await deleteIamRole(roleName);
+        // Delete security group
+        await deleteSecurityGroup(fleetInfo.securityGroupId);
+
+        // Delete IAM role
+        await deleteIamRole(fleetInfo.roleName);
+
+        // Delete fleet information from MongoDB
         await deleteFleetInfo(spotFleetId);
 
+        // Respond with success message
         response.status(200).json({ message: 'Spot Fleet Request Cancelled and resources deleted', spotFleetId });
     } catch (err) {
         console.error('Error cancelling Spot Fleet request:', err);
